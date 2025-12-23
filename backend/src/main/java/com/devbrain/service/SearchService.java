@@ -91,31 +91,56 @@ public class SearchService {
      */
     @SuppressWarnings("unchecked")
     private List<SearchResult> mapToSearchResults(List<Object[]> rows) {
-        return rows.stream().map(row -> {
-            Map<String, Object> metadata = null;
-            Object metadataObj = row[4];
+        if (rows == null || rows.isEmpty()) {
+            return List.of();
+        }
 
-            if (metadataObj != null) {
-                try {
-                    if (metadataObj instanceof String) {
-                        metadata = objectMapper.readValue((String) metadataObj,
-                                new TypeReference<Map<String, Object>>() {});
-                    } else if (metadataObj instanceof Map) {
-                        metadata = (Map<String, Object>) metadataObj;
+        return rows.stream()
+                .filter(row -> row != null && row.length >= 7)
+                .map(row -> {
+                    try {
+                        // 필수 필드 null 체크
+                        UUID chunkId = row[0] != null ? (UUID) row[0] : null;
+                        if (chunkId == null) {
+                            log.warn("검색 결과에 chunkId가 null입니다");
+                            return null;
+                        }
+
+                        Long documentId = row[1] != null ? ((Number) row[1]).longValue() : null;
+                        String content = row[3] != null ? (String) row[3] : "";
+                        Double score = row[6] != null ? ((Number) row[6]).doubleValue() : 0.0;
+
+                        // 메타데이터 파싱
+                        Map<String, Object> metadata = null;
+                        Object metadataObj = row[4];
+
+                        if (metadataObj != null) {
+                            try {
+                                if (metadataObj instanceof String) {
+                                    metadata = objectMapper.readValue((String) metadataObj,
+                                            new TypeReference<Map<String, Object>>() {});
+                                } else if (metadataObj instanceof Map) {
+                                    metadata = (Map<String, Object>) metadataObj;
+                                }
+                            } catch (Exception e) {
+                                log.warn("메타데이터 파싱 실패: {}", e.getMessage());
+                            }
+                        }
+
+                        return SearchResult.builder()
+                                .chunkId(chunkId)
+                                .documentId(documentId)
+                                .content(content)
+                                .metadata(metadata)
+                                .score(score)
+                                .build();
+                    } catch (Exception e) {
+                        log.error("검색 결과 변환 실패: {}", e.getMessage());
+                        return null;
                     }
-                } catch (Exception e) {
-                    log.warn("메타데이터 파싱 실패: {}", e.getMessage());
-                }
-            }
-
-            return SearchResult.builder()
-                    .chunkId((UUID) row[0])
-                    .documentId(((Number) row[1]).longValue())
-                    .content((String) row[3])
-                    .metadata(metadata)
-                    .score(((Number) row[6]).doubleValue())
-                    .build();
-        }).collect(Collectors.toList());
+                })
+                .filter(result -> result != null)
+                .collect(Collectors.toList());
     }
 
     /**
@@ -135,17 +160,35 @@ public class SearchService {
         // 벡터 검색 결과 점수 계산
         for (int i = 0; i < vectorResults.size(); i++) {
             SearchResult result = vectorResults.get(i);
+            UUID chunkId = result.getChunkId();
+            
+            // chunkId가 null인 경우 건너뜀
+            if (chunkId == null) {
+                log.warn("벡터 검색 결과에 chunkId가 null인 항목 발견, 스킵");
+                continue;
+            }
+            
             double score = vectorWeight / (k + i + 1);
-            rrfScores.merge(result.getChunkId(), score, Double::sum);
-            resultMap.put(result.getChunkId(), result);
+            rrfScores.merge(chunkId, score, (oldVal, newVal) -> 
+                    (oldVal != null ? oldVal : 0.0) + (newVal != null ? newVal : 0.0));
+            resultMap.put(chunkId, result);
         }
 
         // 키워드 검색 결과 점수 계산
         for (int i = 0; i < keywordResults.size(); i++) {
             SearchResult result = keywordResults.get(i);
+            UUID chunkId = result.getChunkId();
+            
+            // chunkId가 null인 경우 건너뜀
+            if (chunkId == null) {
+                log.warn("키워드 검색 결과에 chunkId가 null인 항목 발견, 스킵");
+                continue;
+            }
+            
             double score = keywordWeight / (k + i + 1);
-            rrfScores.merge(result.getChunkId(), score, Double::sum);
-            resultMap.putIfAbsent(result.getChunkId(), result);
+            rrfScores.merge(chunkId, score, (oldVal, newVal) -> 
+                    (oldVal != null ? oldVal : 0.0) + (newVal != null ? newVal : 0.0));
+            resultMap.putIfAbsent(chunkId, result);
         }
 
         // 점수 기준 정렬 후 상위 K개 반환
@@ -154,6 +197,10 @@ public class SearchService {
                 .limit(topK)
                 .map(entry -> {
                     SearchResult original = resultMap.get(entry.getKey());
+                    if (original == null) {
+                        log.warn("resultMap에서 chunkId {}에 해당하는 결과를 찾을 수 없음", entry.getKey());
+                        return null;
+                    }
                     return SearchResult.builder()
                             .chunkId(original.getChunkId())
                             .documentId(original.getDocumentId())
@@ -162,6 +209,7 @@ public class SearchService {
                             .score(entry.getValue())
                             .build();
                 })
+                .filter(result -> result != null)
                 .collect(Collectors.toList());
     }
 }
