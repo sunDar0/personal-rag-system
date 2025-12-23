@@ -1,0 +1,132 @@
+services:
+  # ============================================
+  # 📦 인프라 서비스
+  # ============================================
+  
+  # PostgreSQL + pgvector (벡터 검색 지원)
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: devbrain-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      POSTGRES_DB: ${DB_NAME:-dev_brain}
+      # 외부 접속 허용 (GUI 도구 접근용)
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    # 모든 IP에서 접속 허용
+    command: ["postgres", "-c", "listen_addresses=*"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-dev_brain}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis (의미 기반 캐시)
+  redis:
+    image: redis:7-alpine
+    container_name: devbrain-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================
+  # ⚙️ 애플리케이션 서비스 (구현 후 주석 해제)
+  # ============================================
+
+  # Go Gateway
+  # gateway:
+  #   build:
+  #     context: ./gateway
+  #     dockerfile: Dockerfile
+  #   container_name: devbrain-gateway
+  #   restart: unless-stopped
+  #   environment:
+  #     - PORT=${GATEWAY_PORT:-8080}
+  #     - BACKEND_URL=http://backend:8081
+  #     - REDIS_HOST=redis
+  #     - REDIS_PORT=6379
+  #     - RATE_LIMIT=${RATE_LIMIT:-60}
+  #   ports:
+  #     - "${GATEWAY_PORT:-8080}:8080"
+  #   depends_on:
+  #     backend:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+
+  # Java Backend
+  # backend:
+  #   build:
+  #     context: ./backend
+  #     dockerfile: Dockerfile
+  #   container_name: devbrain-backend
+  #   restart: unless-stopped
+  #   environment:
+  #     - SPRING_PROFILES_ACTIVE=${SPRING_PROFILES_ACTIVE:-dev}
+  #     - DB_HOST=postgres
+  #     - DB_PORT=5432
+  #     - DB_USER=${DB_USER:-postgres}
+  #     - DB_PASSWORD=${DB_PASSWORD}
+  #     - DB_NAME=${DB_NAME:-dev_brain}
+  #     - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+  #   ports:
+  #     - "${BACKEND_PORT:-8081}:8081"
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+
+  # TypeScript Collector (일회성 실행)
+  # collector:
+  #   build:
+  #     context: ./collector
+  #     dockerfile: Dockerfile
+  #   container_name: devbrain-collector
+  #   environment:
+  #     - DB_HOST=postgres
+  #     - DB_PORT=5432
+  #     - DB_USER=${DB_USER:-postgres}
+  #     - DB_PASSWORD=${DB_PASSWORD}
+  #     - DB_NAME=${DB_NAME:-dev_brain}
+  #     - GITHUB_TOKEN=${GITHUB_TOKEN}
+  #     - GITHUB_REPOS=${GITHUB_REPOS}
+  #     - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   profiles:
+  #     - tools  # docker compose --profile tools run collector
+
+# ============================================
+# 📁 볼륨 (데이터 영속성)
+# ============================================
+volumes:
+  postgres_data:
+    name: devbrain-postgres-data
+  redis_data:
+    name: devbrain-redis-data
+
+# ============================================
+# 🌐 네트워크
+# ============================================
+networks:
+  default:
+    name: devbrain-network
+
