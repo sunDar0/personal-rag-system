@@ -1,0 +1,58 @@
+# ============================================
+# My Dev Brain - Git Ignore
+# ============================================
+
+# 환경 변수 (민감 정보)
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# ============================================
+# Go (Gateway)
+# ============================================
+gateway/bin/
+gateway/tmp/
+gateway/vendor/
+
+# ============================================
+# Java (Backend)
+# ============================================
+backend/build/
+backend/.gradle/
+backend/bin/
+backend/out/
+backend/*.jar
+backend/*.war
+
+# ============================================
+# TypeScript (Collector)
+# ============================================
+collector/node_modules/
+collector/dist/
+collector/.pnpm-store/
+collector/*.log
+
+# ============================================
+# Docker
+# ============================================
+# Docker 볼륨 데이터는 volumes로 관리되므로 무시할 필요 없음
+
+# ============================================
+# 로그 및 임시 파일
+# ============================================
+*.log
+logs/
+tmp/
+temp/
+
