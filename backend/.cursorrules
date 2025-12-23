@@ -1,0 +1,244 @@
+# Java Spring Boot Backend - Cursor Rules
+
+## 서비스 역할
+Java Spring Boot로 작성된 **RAG 백엔드**입니다.
+- 하이브리드 검색 (벡터 + 키워드)
+- Gemini API 연동
+- 문서 임베딩 및 저장
+- SSE 스트리밍 응답
+
+## 기술 스택
+- **언어**: Java 17+
+- **프레임워크**: Spring Boot 3.x
+- **빌드**: Gradle (Kotlin DSL)
+- **ORM**: Spring Data JPA
+- **벡터 DB**: PostgreSQL + pgvector
+- **AI SDK**: Google Gemini API
+
+## 프로젝트 구조
+```
+backend/
+├── src/main/java/com/devbrain/
+│   ├── DevBrainApplication.java      # 메인 클래스
+│   ├── config/                        # 설정 클래스
+│   │   ├── DatabaseConfig.java
+│   │   └── GeminiConfig.java
+│   ├── domain/                        # 도메인 모델
+│   │   ├── document/
+│   │   │   ├── Document.java          # 엔티티
+│   │   │   ├── DocumentChunk.java
+│   │   │   └── DocumentRepository.java
+│   │   └── chat/
+│   ├── service/                       # 비즈니스 로직
+│   │   ├── SearchService.java         # 하이브리드 검색
+│   │   ├── EmbeddingService.java      # 임베딩 생성
+│   │   └── ChatService.java           # RAG 채팅
+│   ├── controller/                    # REST 컨트롤러
+│   │   └── ChatController.java
+│   └── infrastructure/                # 외부 연동
+│       └── gemini/
+│           └── GeminiClient.java
+├── src/main/resources/
+│   ├── application.yml
+│   └── application-dev.yml
+├── build.gradle.kts
+├── Dockerfile
+└── README.md
+```
+
+## 코딩 규칙
+
+### 1. 레이어 분리 원칙
+```
+Controller → Service → Repository
+    ↓           ↓           ↓
+   DTO      Domain      Entity
+```
+
+- Controller: HTTP 요청/응답 처리, DTO 변환
+- Service: 비즈니스 로직, 트랜잭션 관리
+- Repository: 데이터 접근
+
+### 2. DTO vs Entity 분리
+```java
+// ✅ Good: Controller에서 DTO 사용
+@PostMapping("/chat")
+public ChatResponse chat(@RequestBody ChatRequest request) {
+    return chatService.process(request);
+}
+
+// ❌ Bad: Controller에서 Entity 직접 노출
+@GetMapping("/documents")
+public List<Document> getDocuments() { ... }
+```
+
+### 3. 생성자 주입 (Lombok 활용)
+```java
+// ✅ Good: @RequiredArgsConstructor 사용
+@Service
+@RequiredArgsConstructor
+public class SearchService {
+    private final DocumentRepository documentRepository;
+    private final EmbeddingService embeddingService;
+}
+
+// ❌ Bad: @Autowired 필드 주입
+@Service
+public class SearchService {
+    @Autowired
+    private DocumentRepository documentRepository;
+}
+```
+
+### 4. 예외 처리
+```java
+// 커스텀 예외 정의
+public class DocumentNotFoundException extends RuntimeException {
+    public DocumentNotFoundException(Long id) {
+        super("Document not found: " + id);
+    }
+}
+
+// GlobalExceptionHandler에서 통합 처리
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+    @ExceptionHandler(DocumentNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handleNotFound(DocumentNotFoundException e) {
+        return ResponseEntity.status(404).body(new ErrorResponse(e.getMessage()));
+    }
+}
+```
+
+### 5. 로깅
+```java
+// ✅ Good: Lombok @Slf4j 사용
+@Slf4j
+@Service
+public class ChatService {
+    public void process() {
+        log.info("Processing chat request");
+        log.debug("Request details: {}", request);
+    }
+}
+```
+
+## 하이브리드 검색 구현 가이드
+
+```java
+@Service
+@RequiredArgsConstructor
+public class SearchService {
+    
+    private final DocumentChunkRepository chunkRepository;
+    private final EmbeddingService embeddingService;
+    
+    /**
+     * 하이브리드 검색: 벡터 + 키워드 결합
+     * 최종 점수 = (벡터 점수 * 0.7) + (키워드 점수 * 0.3)
+     */
+    public List<DocumentChunk> hybridSearch(String query, int topK) {
+        // 1. 쿼리 임베딩 생성
+        float[] queryVector = embeddingService.embed(query);
+        
+        // 2. 벡터 검색 (코사인 유사도)
+        List<SearchResult> vectorResults = chunkRepository
+            .findByVectorSimilarity(queryVector, 20);
+        
+        // 3. 키워드 검색 (Full-Text Search)
+        List<SearchResult> keywordResults = chunkRepository
+            .findByFullTextSearch(query, 20);
+        
+        // 4. RRF 알고리즘으로 점수 병합
+        return mergeWithRRF(vectorResults, keywordResults, topK);
+    }
+}
+```
+
+## Native Query 예시 (pgvector)
+
+```java
+@Repository
+public interface DocumentChunkRepository extends JpaRepository<DocumentChunk, UUID> {
+    
+    // 벡터 유사도 검색 (코사인 거리)
+    @Query(value = """
+        SELECT c.*, 1 - (c.embedding <=> cast(:vector as vector)) as score
+        FROM document_chunks c
+        ORDER BY c.embedding <=> cast(:vector as vector)
+        LIMIT :limit
+        """, nativeQuery = true)
+    List<DocumentChunk> findByVectorSimilarity(
+        @Param("vector") String vector,
+        @Param("limit") int limit
+    );
+    
+    // Full-Text Search
+    @Query(value = """
+        SELECT c.*, ts_rank(c.fts_vector, plainto_tsquery(:query)) as score
+        FROM document_chunks c
+        WHERE c.fts_vector @@ plainto_tsquery(:query)
+        ORDER BY score DESC
+        LIMIT :limit
+        """, nativeQuery = true)
+    List<DocumentChunk> findByFullTextSearch(
+        @Param("query") String query,
+        @Param("limit") int limit
+    );
+}
+```
+
+## SSE 스트리밍 응답
+
+```java
+@RestController
+@RequestMapping("/api/chat")
+@RequiredArgsConstructor
+public class ChatController {
+    
+    private final ChatService chatService;
+    
+    @GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<String>> streamChat(@RequestParam String query) {
+        return chatService.streamResponse(query)
+            .map(chunk -> ServerSentEvent.<String>builder()
+                .data(chunk)
+                .build());
+    }
+}
+```
+
+## 테스트 규칙
+- 단위 테스트: JUnit 5 + Mockito
+- 통합 테스트: @SpringBootTest + Testcontainers
+- Repository 테스트: @DataJpaTest
+
+## 실행 명령어
+```bash
+# 개발 모드
+./gradlew bootRun --args='--spring.profiles.active=dev'
+
+# 빌드
+./gradlew build
+
+# 테스트
+./gradlew test
+```
+
+## 환경 변수 (application.yml)
+```yaml
+spring:
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:dev_brain}
+    username: ${DB_USER:postgres}
+    password: ${DB_PASSWORD:secret}
+
+gemini:
+  api-key: ${GOOGLE_API_KEY}
+  model: gemini-pro
+```
+
+## 주의사항
+- **초보자 친화적**: 복잡한 패턴보다 명확한 구조 우선
+- **JPA N+1 문제**: fetch join 또는 EntityGraph 사용
+- **벡터 타입**: pgvector는 float[] ↔ String 변환 필요
+

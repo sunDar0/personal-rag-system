@@ -1,0 +1,153 @@
+# Go Gateway - Cursor Rules
+
+## 서비스 역할
+Go로 작성된 **지능형 게이트웨이**입니다.
+- Reverse Proxy (Java 백엔드로 요청 전달)
+- 의미 기반 캐시 (Semantic Cache with Redis)
+- Rate Limiting (IP 기반 요청 제한)
+- SSE 스트리밍 중계
+
+## 기술 스택
+- **언어**: Go 1.21+
+- **웹 프레임워크**: Gin 또는 Chi
+- **Redis 클라이언트**: go-redis/redis
+- **HTTP 클라이언트**: net/http (표준 라이브러리)
+
+## 프로젝트 구조
+```
+gateway/
+├── cmd/
+│   └── server/
+│       └── main.go          # 진입점
+├── internal/
+│   ├── config/              # 설정 로드
+│   ├── handler/             # HTTP 핸들러
+│   ├── middleware/          # 미들웨어 (Rate Limit, 인증)
+│   ├── cache/               # Redis 캐시 로직
+│   └── proxy/               # Reverse Proxy 로직
+├── pkg/                     # 외부 공개 패키지 (필요시)
+├── go.mod
+├── go.sum
+├── Dockerfile
+└── README.md
+```
+
+## 코딩 규칙
+
+### 1. 에러 처리
+```go
+// ✅ Good: 에러를 명시적으로 처리
+result, err := doSomething()
+if err != nil {
+    return fmt.Errorf("doSomething failed: %w", err)
+}
+
+// ❌ Bad: 에러 무시
+result, _ := doSomething()
+```
+
+### 2. 구조체 정의
+```go
+// ✅ Good: 필드 태그 정렬, 주석 추가
+type Config struct {
+    RedisHost   string `env:"REDIS_HOST" default:"localhost"`
+    RedisPort   int    `env:"REDIS_PORT" default:"6379"`
+    BackendURL  string `env:"BACKEND_URL" required:"true"`
+    RateLimit   int    `env:"RATE_LIMIT" default:"60"` // 분당 요청 수
+}
+```
+
+### 3. 컨텍스트 사용
+```go
+// ✅ Good: 컨텍스트를 첫 번째 인자로 전달
+func (s *Service) Process(ctx context.Context, req Request) error
+
+// ❌ Bad: 컨텍스트 없이 함수 정의
+func (s *Service) Process(req Request) error
+```
+
+### 4. 인터페이스
+```go
+// ✅ Good: 작은 인터페이스 선호
+type Cacher interface {
+    Get(ctx context.Context, key string) (string, error)
+    Set(ctx context.Context, key string, value string, ttl time.Duration) error
+}
+
+// ❌ Bad: 모든 것을 담은 거대 인터페이스
+type Repository interface {
+    Get, Set, Delete, Update, List, Count, ... // 너무 많음
+}
+```
+
+### 5. 미들웨어 체인
+```go
+// 미들웨어 적용 순서
+router.Use(
+    middleware.Recovery(),      // 1. 패닉 복구
+    middleware.Logger(),        // 2. 로깅
+    middleware.RateLimiter(cfg),// 3. Rate Limiting
+)
+```
+
+## 의미 기반 캐시 구현 가이드
+
+```go
+// 의사 코드 - 실제 구현 시 참고
+func (h *Handler) Chat(c *gin.Context) {
+    query := c.Query("q")
+    
+    // 1. 캐시 확인 (벡터 유사도 95% 이상)
+    if cached, found := h.cache.FindSimilar(c, query, 0.95); found {
+        c.JSON(200, cached)
+        return
+    }
+    
+    // 2. 백엔드로 프록시 (SSE 스트리밍)
+    h.proxy.StreamTo(c, h.backendURL, c.Request)
+    
+    // 3. 응답 캐시 저장 (비동기)
+    go h.cache.Store(context.Background(), query, response)
+}
+```
+
+## SSE 스트리밍 중계 패턴
+
+```go
+// SSE 응답을 클라이언트에게 그대로 전달
+func (p *Proxy) StreamTo(c *gin.Context, targetURL string, req *http.Request) {
+    c.Header("Content-Type", "text/event-stream")
+    c.Header("Cache-Control", "no-cache")
+    c.Header("Connection", "keep-alive")
+    
+    // 백엔드 응답을 읽으면서 즉시 클라이언트에 write
+    // io.Copy 또는 bufio.Scanner 사용
+}
+```
+
+## 테스트 규칙
+- 단위 테스트: `*_test.go` 파일
+- 테이블 기반 테스트 선호
+- 모킹: testify/mock 또는 gomock 사용
+
+## 실행 명령어
+```bash
+# 개발 모드
+go run cmd/server/main.go
+
+# 빌드
+go build -o bin/gateway cmd/server/main.go
+
+# 테스트
+go test ./...
+```
+
+## 환경 변수
+| 변수 | 설명 | 기본값 |
+|------|------|--------|
+| BACKEND_URL | Java 백엔드 URL | http://localhost:8081 |
+| REDIS_HOST | Redis 호스트 | localhost |
+| REDIS_PORT | Redis 포트 | 6379 |
+| RATE_LIMIT | 분당 최대 요청 수 | 60 |
+| PORT | 서버 포트 | 8080 |
+

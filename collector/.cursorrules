@@ -1,0 +1,281 @@
+# TypeScript Collector - Cursor Rules
+
+## 서비스 역할
+TypeScript로 작성된 **데이터 수집기**입니다.
+- GitHub 레포지토리 코드 수집
+- Notion 페이지 수집 (선택사항)
+- 코드 청킹 (언어별 분할)
+- 임베딩 생성 및 DB 저장
+- 증분 동기화 (변경분만 처리)
+
+## 기술 스택
+- **언어**: TypeScript 5.x
+- **런타임**: Node.js 20+
+- **패키지 매니저**: pnpm
+- **DB 클라이언트**: Drizzle ORM 또는 Prisma
+- **스케줄러**: node-cron
+- **API 클라이언트**: Octokit (GitHub), @notionhq/client
+
+## 프로젝트 구조
+```
+collector/
+├── src/
+│   ├── index.ts                  # 진입점
+│   ├── config/
+│   │   └── env.ts                # 환경 변수 검증
+│   ├── sources/                  # 데이터 소스별 수집기
+│   │   ├── github/
+│   │   │   ├── client.ts         # GitHub API 클라이언트
+│   │   │   ├── fetcher.ts        # 파일 가져오기
+│   │   │   └── parser.ts         # 코드 파싱
+│   │   └── notion/
+│   │       └── client.ts
+│   ├── chunking/                 # 텍스트 분할 로직
+│   │   ├── splitter.ts           # 청킹 엔진
+│   │   └── languages/            # 언어별 분할 규칙
+│   │       ├── java.ts
+│   │       ├── go.ts
+│   │       └── typescript.ts
+│   ├── embedding/                # 임베딩 생성
+│   │   └── gemini.ts
+│   ├── db/                       # 데이터베이스 연동
+│   │   ├── schema.ts             # 스키마 정의
+│   │   ├── client.ts             # DB 클라이언트
+│   │   └── repository.ts         # CRUD 함수
+│   └── sync/                     # 동기화 로직
+│       └── incremental.ts        # 증분 동기화
+├── package.json
+├── pnpm-lock.yaml
+├── tsconfig.json
+├── Dockerfile
+└── README.md
+```
+
+## 코딩 규칙
+
+### 1. 타입 안전성
+```typescript
+// ✅ Good: 명시적 타입 정의
+interface DocumentChunk {
+  id: string;
+  documentId: number;
+  content: string;
+  metadata: ChunkMetadata;
+  embedding: number[];
+}
+
+interface ChunkMetadata {
+  filePath: string;
+  functionName?: string;
+  language: string;
+  startLine: number;
+  endLine: number;
+}
+
+// ❌ Bad: any 타입 사용
+function processChunk(chunk: any): any { ... }
+```
+
+### 2. 에러 처리 (Result 패턴)
+```typescript
+// ✅ Good: Result 타입으로 에러 처리
+type Result<T, E = Error> = 
+  | { success: true; data: T }
+  | { success: false; error: E };
+
+async function fetchFile(path: string): Promise<Result<string>> {
+  try {
+    const content = await github.getContent(path);
+    return { success: true, data: content };
+  } catch (error) {
+    return { success: false, error: error as Error };
+  }
+}
+
+// 사용
+const result = await fetchFile("src/main.ts");
+if (!result.success) {
+  console.error("Failed:", result.error.message);
+  return;
+}
+console.log(result.data);
+```
+
+### 3. 환경 변수 검증
+```typescript
+// src/config/env.ts
+import { z } from 'zod';
+
+const envSchema = z.object({
+  DB_HOST: z.string().default('localhost'),
+  DB_PORT: z.coerce.number().default(5432),
+  DB_USER: z.string(),
+  DB_PASSWORD: z.string(),
+  DB_NAME: z.string().default('dev_brain'),
+  GITHUB_TOKEN: z.string(),
+  GOOGLE_API_KEY: z.string(),
+});
+
+export const env = envSchema.parse(process.env);
+```
+
+### 4. 함수형 스타일 선호
+```typescript
+// ✅ Good: 순수 함수, 파이프라인
+const processFiles = (files: GitHubFile[]) =>
+  files
+    .filter(f => isSupportedLanguage(f.path))
+    .map(f => parseFile(f))
+    .flatMap(f => splitIntoChunks(f));
+
+// ❌ Bad: 명령형 루프와 부수효과
+const chunks = [];
+for (const file of files) {
+  if (isSupportedLanguage(file.path)) {
+    const parsed = parseFile(file);
+    chunks.push(...splitIntoChunks(parsed));
+  }
+}
+```
+
+### 5. 비동기 처리
+```typescript
+// ✅ Good: Promise.all로 병렬 처리
+const embeddings = await Promise.all(
+  chunks.map(chunk => embedService.embed(chunk.content))
+);
+
+// ✅ Good: 배치 처리로 API 제한 우회
+async function batchEmbed(texts: string[], batchSize = 10) {
+  const results: number[][] = [];
+  for (let i = 0; i < texts.length; i += batchSize) {
+    const batch = texts.slice(i, i + batchSize);
+    const embeddings = await Promise.all(batch.map(embed));
+    results.push(...embeddings);
+    await sleep(100); // Rate limit 방지
+  }
+  return results;
+}
+```
+
+## 코드 청킹 전략
+
+```typescript
+// src/chunking/languages/java.ts
+export const javaChunker: LanguageChunker = {
+  language: 'java',
+  separators: [
+    '\nclass ',           // 클래스 시작
+    '\npublic class ',
+    '\nprivate class ',
+    '\ninterface ',
+    '\npublic void ',     // 메서드 시작
+    '\nprivate void ',
+    '\npublic static ',
+    '\n}\n',              // 블록 종료
+  ],
+  
+  // 청크에 메타데이터 주입
+  enrichChunk(content: string, filePath: string): EnrichedChunk {
+    const functionName = extractFunctionName(content);
+    return {
+      content: `// File: ${filePath}\n// Function: ${functionName}\n${content}`,
+      metadata: { filePath, functionName, language: 'java' },
+    };
+  },
+};
+```
+
+## 증분 동기화 구현
+
+```typescript
+// src/sync/incremental.ts
+async function syncRepository(repoFullName: string) {
+  // 1. GitHub에서 현재 파일 목록 및 SHA 조회
+  const remoteFiles = await github.getTree(repoFullName);
+  
+  // 2. DB에서 저장된 파일 해시 조회
+  const localFiles = await db.getDocumentsByRepo(repoFullName);
+  
+  // 3. 변경 감지
+  const changes = detectChanges(remoteFiles, localFiles);
+  
+  // 4. 변경된 파일만 처리
+  for (const file of changes.added) {
+    await processNewFile(file);
+  }
+  
+  for (const file of changes.modified) {
+    await db.deleteChunksByDocument(file.documentId);
+    await processNewFile(file);
+  }
+  
+  for (const file of changes.deleted) {
+    await db.deleteDocument(file.documentId);
+  }
+  
+  console.log(`Sync complete: +${changes.added.length} ~${changes.modified.length} -${changes.deleted.length}`);
+}
+```
+
+## 테스트 규칙
+- 테스트 프레임워크: Vitest
+- 모킹: vitest mock 또는 msw
+- 파일 명명: `*.test.ts`
+
+```typescript
+// src/chunking/splitter.test.ts
+import { describe, it, expect } from 'vitest';
+import { splitCode } from './splitter';
+
+describe('splitCode', () => {
+  it('should split Java class into methods', () => {
+    const code = `public class Hello {
+      public void greet() { }
+      public void farewell() { }
+    }`;
+    
+    const chunks = splitCode(code, 'java');
+    expect(chunks).toHaveLength(2);
+  });
+});
+```
+
+## 실행 명령어
+```bash
+# 의존성 설치
+pnpm install
+
+# 개발 모드 (watch)
+pnpm dev
+
+# 빌드
+pnpm build
+
+# 실행
+pnpm start
+
+# 테스트
+pnpm test
+
+# 한 번 실행 (Cron 대신)
+pnpm sync
+```
+
+## 환경 변수
+| 변수 | 설명 | 필수 |
+|------|------|------|
+| DB_HOST | PostgreSQL 호스트 | ✅ |
+| DB_PORT | PostgreSQL 포트 | (기본: 5432) |
+| DB_USER | DB 사용자명 | ✅ |
+| DB_PASSWORD | DB 비밀번호 | ✅ |
+| DB_NAME | DB 이름 | (기본: dev_brain) |
+| GITHUB_TOKEN | GitHub Personal Access Token | ✅ |
+| GOOGLE_API_KEY | Gemini API 키 | ✅ |
+| SYNC_CRON | 동기화 주기 | (기본: 0 */6 * * *) |
+
+## 참고 사항
+- NestJS 경험이 있으므로 구조가 익숙할 것
+- Express 대신 직접 스크립트로 실행 (웹 서버 불필요)
+- Drizzle ORM 권장 (가볍고 타입 안전)
+
