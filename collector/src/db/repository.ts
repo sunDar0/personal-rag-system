@@ -52,32 +52,8 @@ export async function deleteChunksByDocumentId(
 }
 
 /**
- * 청크 저장 (임베딩 포함)
+ * 여러 청크 일괄 저장 (임베딩 포함)
  * pgvector는 Drizzle에서 직접 지원하지 않으므로 raw SQL 사용
- */
-export async function insertChunkWithEmbedding(
-  chunk: NewDocumentChunk,
-  embedding: number[]
-): Promise<string> {
-  const embeddingStr = `[${embedding.join(",")}]`;
-
-  const result = await sql`
-    INSERT INTO document_chunks (document_id, chunk_index, content, metadata, embedding)
-    VALUES (
-      ${chunk.documentId},
-      ${chunk.chunkIndex},
-      ${chunk.content},
-      ${JSON.stringify(chunk.metadata)},
-      ${embeddingStr}::vector
-    )
-    RETURNING id
-  `;
-
-  return result[0].id;
-}
-
-/**
- * 여러 청크 일괄 저장
  */
 export async function insertChunksWithEmbeddings(
   chunks: Array<{
