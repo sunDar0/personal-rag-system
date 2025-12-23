@@ -1,0 +1,68 @@
+# My Dev Brain - 프로젝트 공통 규칙
+
+## 프로젝트 개요
+이 프로젝트는 사내/개인 지식을 위한 RAG(Retrieval-Augmented Generation) 시스템입니다.
+- **게이트웨이**: Go (Reverse Proxy, 캐시, Rate Limiting)
+- **백엔드**: Java Spring Boot (RAG 로직, 하이브리드 검색)
+- **수집기**: TypeScript (GitHub/Notion 데이터 수집)
+- **데이터베이스**: PostgreSQL + pgvector
+- **캐시**: Redis
+
+## 디렉토리 구조
+```
+/gateway     → Go 게이트웨이 서비스
+/backend     → Java Spring Boot 백엔드
+/collector   → TypeScript 데이터 수집기
+/infrastructure → Docker, DB 스크립트
+```
+
+## 공통 코딩 규칙
+
+### 1. 언어 및 응답
+- 모든 응답은 **한글**로 작성
+- 코드 주석은 한글 허용, 변수/함수명은 영어
+
+### 2. 코드 스타일
+- 가독성과 유지보수성 우선
+- 표준 라이브러리 및 패턴 사용
+- 불필요한 추상화 금지
+
+### 3. 문서화
+- 각 서비스의 README.md 작성 필수
+- API 엔드포인트는 OpenAPI/Swagger 문서화
+- 환경 변수는 .env.example 파일로 예시 제공
+
+### 4. 환경 변수
+- 민감 정보는 절대 코드에 하드코딩 금지
+- 환경별 설정 분리 (dev, prod)
+
+### 5. Git 컨벤션
+- 커밋 메시지: `[서비스명] 타입: 설명`
+  - 예: `[backend] feat: 하이브리드 검색 구현`
+  - 예: `[gateway] fix: Rate Limiter 버그 수정`
+- 브랜치: `feature/서비스명-기능명`
+
+### 6. Docker
+- 각 서비스는 독립적인 Dockerfile 보유
+- docker-compose.yml로 전체 스택 실행 가능
+
+## 서비스 간 통신
+- Gateway → Backend: HTTP/REST (내부 통신)
+- Backend → PostgreSQL: TCP (JDBC)
+- Backend → Redis: TCP
+- Backend → Gemini API: HTTPS
+- Collector → PostgreSQL: TCP
+
+## 포트 규칙
+| 서비스 | 포트 |
+|--------|------|
+| Gateway (Go) | 8080 |
+| Backend (Java) | 8081 |
+| PostgreSQL | 5432 |
+| Redis | 6379 |
+
+## 참조 문서
+- `SPECIFICATION.md`: 기술 명세서
+- `ARCHITECTURE.md`: 아키텍처 설계 문서
+- 각 서비스별 `.cursorrules`: 언어별 상세 규칙
+
