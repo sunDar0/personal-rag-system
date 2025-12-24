@@ -1,0 +1,15 @@
+# 로그 확인
+docker compose logs -f postgres
+docker compose logs -f redis
+
+# PostgreSQL 직접 접속
+docker exec -it devbrain-postgres psql -U postgres -d dev_brain
+
+# Redis CLI 접속
+docker exec -it devbrain-redis redis-cli
+
+# 서비스 중지
+docker compose down
+
+# 데이터 포함 완전 삭제
+docker compose down -v
