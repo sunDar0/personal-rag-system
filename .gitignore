@@ -6,7 +6,7 @@
 .env
 .env.local
 .env.*.local
-.env.example
+# .env.example은 템플릿이므로 Git에 포함 (공유 필요)
 
 # IDE
 .idea/
